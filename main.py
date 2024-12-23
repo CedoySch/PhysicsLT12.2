@@ -1,238 +1,243 @@
 import sys
 import numpy as np
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QPushButton, QVBoxLayout,
-    QHBoxLayout, QLabel, QMessageBox, QTextEdit, QSizePolicy,
-    QGroupBox, QGridLayout, QLineEdit, QCheckBox, QSpinBox
-)
-from PyQt5.QtCore import Qt
+import matplotlib
+from PyQt5.QtCore import QLocale
+matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QMessageBox
+)
+from PyQt5.QtGui import QDoubleValidator
+from matplotlib.lines import Line2D
 
+class EMFieldPlot(FigureCanvas):
+    def __init__(self, parent=None):
+        self.epsilon1 = None
+        self.epsilon2 = None
+        self.E0 = None
+        self.theta_deg = None
+        self.limit_x = None
+        self.limit_y = None
+        self.is_panning = False
+        self.press = None
+        self.fig = Figure()
+        super().__init__(self.fig)
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_aspect('equal')
+        self.fig.tight_layout()
+        self.mpl_connect('scroll_event', self.zoom)
+        self.mpl_connect('button_press_event', self.on_press)
+        self.mpl_connect('button_release_event', self.on_release)
+        self.mpl_connect('motion_notify_event', self.on_move)
 
-class ElectrostaticFieldApp(QWidget):
+    def compute_fields(self):
+        if None in (self.epsilon1, self.epsilon2, self.E0, self.theta_deg, self.limit_x, self.limit_y):
+            return
+        self.x = np.linspace(-self.limit_x, self.limit_x, 400)
+        self.y = np.linspace(-self.limit_y, self.limit_y, 400)
+        self.X, self.Y = np.meshgrid(self.x, self.y)
+        alpha = np.deg2rad(self.theta_deg)
+        n1 = np.sqrt(self.epsilon1)
+        n2 = np.sqrt(self.epsilon2)
+        sin_val = n1 * np.sin(alpha) / n2
+        if abs(sin_val) <= 1:
+            alpha2 = np.arcsin(sin_val)
+            Ex2 = self.E0 * np.cos(alpha2)
+            Ey2 = self.E0 * np.sin(alpha2)
+        else:
+            alpha2 = None
+            Ex2 = 0.0
+            Ey2 = 0.0
+        Ex1 = self.E0 * np.cos(alpha)
+        Ey1 = self.E0 * np.sin(alpha)
+        D1x = self.epsilon1 * Ex1
+        D1y = self.epsilon1 * Ey1
+        D2x = self.epsilon2 * Ex2
+        D2y = self.epsilon2 * Ey2
+        Ex_bottom = Ex1
+        Ey_bottom = Ey1
+        Dx_bottom = D1x
+        Dy_bottom = D1y
+        Ex_top = Ex2
+        Ey_top = Ey2
+        Dx_top = D2x
+        Dy_top = D2y
+        self.Ex = np.where(self.Y >= 0, Ex_top, Ex_bottom)
+        self.Ey = np.where(self.Y >= 0, Ey_top, Ey_bottom)
+        self.Dx = np.where(self.Y >= 0, Dx_top, Dx_bottom)
+        self.Dy = np.where(self.Y >= 0, Dy_top, Dy_bottom)
+
+    def plot_fields(self):
+        if None in (self.epsilon1, self.epsilon2, self.E0, self.theta_deg, self.limit_x, self.limit_y):
+            self.ax.clear()
+            self.ax.set_xlim(-10, 10)
+            self.ax.set_ylim(-10, 10)
+            self.ax.set_xlabel('X')
+            self.ax.set_ylabel('Y')
+            self.ax.set_title('Граничные условия двух диэлектриков')
+            self.draw()
+            return
+        self.ax.clear()
+        self.ax.fill_between(self.x, 0, self.limit_y, color='lightgray', alpha=0.5, label='ε₂')
+        self.ax.fill_between(self.x, -self.limit_y, 0, color='white', alpha=0.5, label='ε₁')
+        self.ax.axhline(0, color='k', linewidth=2)
+        density = 1.5
+        self.ax.streamplot(self.X, self.Y, self.Ex, self.Ey, color='blue', linewidth=1, density=density, arrowsize=1)
+        self.ax.streamplot(self.X, self.Y, self.Dx, self.Dy, color='red', linewidth=1, density=density, arrowsize=1)
+        custom_lines = [Line2D([0], [0], color='blue', lw=2), Line2D([0], [0], color='red', lw=2)]
+        self.ax.legend(custom_lines, ['Напряженность E', 'Смещение D'])
+        self.ax.set_xlim(-self.limit_x, self.limit_x)
+        self.ax.set_ylim(-self.limit_y, self.limit_y)
+        self.ax.set_xlabel('X')
+        self.ax.set_ylabel('Y')
+        self.ax.set_title('Граничные условия двух диэлектриков\nСиние линии: Напряженность E, Красные линии: Смещение D')
+        self.draw()
+
+    def zoom(self, event):
+        if None in (self.limit_x, self.limit_y):
+            return
+        base_scale = 1.2
+        if event.button == 'up':
+            scale_factor = 1 / base_scale
+        elif event.button == 'down':
+            scale_factor = base_scale
+        else:
+            scale_factor = 1
+        xdata = event.xdata
+        ydata = event.ydata
+        if xdata is None or ydata is None:
+            return
+        cur_xlim = self.ax.get_xlim()
+        cur_ylim = self.ax.get_ylim()
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
+        new_xmin = xdata - new_width * (1 - relx)
+        new_xmax = xdata + new_width * relx
+        new_ymin = ydata - new_height * (1 - rely)
+        new_ymax = ydata + new_height * rely
+        new_xmin = max(-self.limit_x, new_xmin)
+        new_xmax = min(self.limit_x, new_xmax)
+        new_ymin = max(-self.limit_y, new_ymin)
+        new_ymax = min(self.limit_y, new_ymax)
+        self.ax.set_xlim(new_xmin, new_xmax)
+        self.ax.set_ylim(new_ymin, new_ymax)
+        self.draw()
+
+    def on_press(self, event):
+        if event.button == 1:
+            self.is_panning = True
+            self.press = event.x, event.y, self.ax.get_xlim(), self.ax.get_ylim()
+
+    def on_release(self, event):
+        if event.button == 1:
+            self.is_panning = False
+            self.press = None
+        self.draw()
+
+    def on_move(self, event):
+        if not self.is_panning:
+            return
+        if self.press is None:
+            return
+        if event.inaxes != self.ax:
+            return
+        xpress, ypress, xlim, ylim = self.press
+        dx = event.x - xpress
+        dy = event.y - ypress
+        dx_scaled = -dx * (xlim[1] - xlim[0]) / self.fig.bbox.width
+        dy_scaled = dy * (ylim[1] - ylim[0]) / self.fig.bbox.height
+        new_xlim = [xlim[0] + dx_scaled, xlim[1] + dx_scaled]
+        new_ylim = [ylim[0] + dy_scaled, ylim[1] + dy_scaled]
+        new_xlim[0] = max(-self.limit_x, new_xlim[0])
+        new_xlim[1] = min(self.limit_x, new_xlim[1])
+        new_ylim[0] = max(-self.limit_y, new_ylim[0])
+        new_ylim[1] = min(self.limit_y, new_ylim[1])
+        self.ax.set_xlim(new_xlim)
+        self.ax.set_ylim(new_ylim)
+        self.draw()
+
+    def update_parameters(self, epsilon1, epsilon2, E0, theta_deg, limit_x, limit_y):
+        self.epsilon1 = epsilon1
+        self.epsilon2 = epsilon2
+        self.E0 = E0
+        self.theta_deg = theta_deg
+        self.limit_x = limit_x
+        self.limit_y = limit_y
+        self.compute_fields()
+        self.plot_fields()
+
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.init_ui()
+        self.setWindowTitle('Визуализация граничных условий двух диэлектриков')
+        self.setGeometry(100, 100, 1200, 800)
+        w = QWidget()
+        self.setCentralWidget(w)
+        v = QVBoxLayout()
+        w.setLayout(v)
+        self.plot = EMFieldPlot(self)
+        v.addWidget(self.plot)
+        l1 = QHBoxLayout()
+        dv = QDoubleValidator(bottom=0.0)
+        dv.setLocale(QLocale(QLocale.C))
+        l1.addWidget(QLabel('ε₁:'))
+        self.eps1_input = QLineEdit()
+        self.eps1_input.setValidator(dv)
+        l1.addWidget(self.eps1_input)
+        l1.addWidget(QLabel('ε₂:'))
+        self.eps2_input = QLineEdit()
+        self.eps2_input.setValidator(dv)
+        l1.addWidget(self.eps2_input)
+        l1.addWidget(QLabel('E₀:'))
+        self.E0_input = QLineEdit()
+        self.E0_input.setValidator(dv)
+        l1.addWidget(self.E0_input)
+        l1.addWidget(QLabel('θ (градусы):'))
+        self.theta_input = QLineEdit()
+        self.theta_input.setValidator(QDoubleValidator(0.0, 90.0, 2))
+        l1.addWidget(self.theta_input)
+        v.addLayout(l1)
+        l2 = QHBoxLayout()
+        l2.addWidget(QLabel('Лимит X:'))
+        self.limit_x_input = QLineEdit()
+        self.limit_x_input.setValidator(dv)
+        l2.addWidget(self.limit_x_input)
+        l2.addWidget(QLabel('Лимит Y:'))
+        self.limit_y_input = QLineEdit()
+        self.limit_y_input.setValidator(dv)
+        l2.addWidget(self.limit_y_input)
+        self.update_button = QPushButton('Обновить')
+        self.update_button.clicked.connect(self.update_plot)
+        l2.addWidget(self.update_button)
+        v.addLayout(l2)
+        self.limit_x_input.setText('10')
+        self.limit_y_input.setText('10')
 
-    def init_ui(self):
-        self.setWindowTitle('Визуализация электростатического поля и эквипотенциалов')
-        self.setGeometry(100, 100, 1400, 800)
-
-        # Инструкции
-        instructions_label = QLabel('Введите параметры зарядов (x y q) в каждой строке:')
-        instructions_label.setAlignment(Qt.AlignLeft)
-
-        # Поле ввода зарядов
-        self.charges_input = QTextEdit()
-        self.charges_input.setPlaceholderText("Пример:\n0 0 1\n1 0 -1")
-        self.charges_input.setFixedHeight(150)
-
-        # Группа параметров сетки
-        grid_group = QGroupBox("Параметры сетки")
-        grid_layout = QGridLayout()
-
-        self.grid_min_input = QLineEdit("-10")
-        self.grid_max_input = QLineEdit("10")
-        self.grid_points_input = QLineEdit("200")
-
-        grid_layout.addWidget(QLabel("Мин X и Y:"), 0, 0)
-        grid_layout.addWidget(self.grid_min_input, 0, 1)
-        grid_layout.addWidget(QLabel("Макс X и Y:"), 1, 0)
-        grid_layout.addWidget(self.grid_max_input, 1, 1)
-        grid_layout.addWidget(QLabel("Количество точек:"), 2, 0)
-        grid_layout.addWidget(self.grid_points_input, 2, 1)
-
-        grid_group.setLayout(grid_layout)
-
-        # Группа параметров эквипотенциалов
-        potential_group = QGroupBox("Параметры эквипотенциалов")
-        potential_layout = QGridLayout()
-
-        self.show_potential_checkbox = QCheckBox("Отображать эквипотенциальные линии")
-        self.show_potential_checkbox.setChecked(True)
-        potential_layout.addWidget(self.show_potential_checkbox, 0, 0, 1, 2)
-
-        potential_layout.addWidget(QLabel("Количество уровней:"), 1, 0)
-        self.potential_levels_spinbox = QSpinBox()
-        self.potential_levels_spinbox.setRange(1, 100)
-        self.potential_levels_spinbox.setValue(20)
-        potential_layout.addWidget(self.potential_levels_spinbox, 1, 1)
-
-        potential_group.setLayout(potential_layout)
-
-        # Кнопка построения
-        self.plot_button = QPushButton('Построить поле')
-        self.plot_button.clicked.connect(self.plot_field)
-
-        # Поле для графика
-        self.figure = Figure()
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.canvas.updateGeometry()
-
-        # Подключение событий мыши
-        self.canvas.mpl_connect("scroll_event", self.on_scroll)
-
-        # Компоновка ввода
-        input_layout = QVBoxLayout()
-        input_layout.addWidget(instructions_label)
-        input_layout.addWidget(self.charges_input)
-        input_layout.addWidget(grid_group)
-        input_layout.addWidget(potential_group)
-        input_layout.addWidget(self.plot_button)
-        input_layout.addStretch()
-
-        # Основная компоновка
-        main_layout = QHBoxLayout()
-        main_layout.addLayout(input_layout, 1)
-        main_layout.addWidget(self.canvas, 3)
-
-        self.setLayout(main_layout)
-        self.show()
-
-    def plot_field(self):
+    def update_plot(self):
         try:
-            charges_text = self.charges_input.toPlainText().strip()
-            if not charges_text:
-                raise ValueError("Необходимо ввести хотя бы один заряд.")
-
-            # Парсинг зарядов
-            charges = []
-            for idx, line in enumerate(charges_text.split('\n'), start=1):
-                if not line.strip():
-                    continue
-                parts = line.strip().split()
-                if len(parts) != 3:
-                    raise ValueError(f"Строка {idx}: Ожидается три значения (x y q).")
-                x_str, y_str, q_str = parts
-                try:
-                    x, y, q = float(x_str), float(y_str), float(q_str)
-                except ValueError:
-                    raise ValueError(f"Строка {idx}: x, y и q должны быть числами.")
-                charges.append((x, y, q))
-
-            if not charges:
-                raise ValueError("Необходимо ввести хотя бы один заряд.")
-
-            # Парсинг параметров сетки
-            try:
-                grid_min = float(self.grid_min_input.text())
-                grid_max = float(self.grid_max_input.text())
-                grid_points = int(self.grid_points_input.text())
-                if grid_min >= grid_max:
-                    raise ValueError("Мин должно быть меньше Макс.")
-                if grid_points <= 0:
-                    raise ValueError("Количество точек должно быть положительным.")
-            except ValueError as ve:
-                raise ValueError(f"Параметры сетки: {ve}")
-
-            # Параметры эквипотенциалов
-            show_potential = self.show_potential_checkbox.isChecked()
-            potential_levels = self.potential_levels_spinbox.value()
-
-            # Создание сетки
-            self.figure.clear()
-            self.ax = self.figure.add_subplot(111)  # Храним ось для взаимодействия
-            ax = self.ax
-
-            x = np.linspace(grid_min, grid_max, grid_points)
-            y = np.linspace(grid_min, grid_max, grid_points)
-            X, Y = np.meshgrid(x, y)
-            Ex = np.zeros_like(X)
-            Ey = np.zeros_like(Y)
-            V = np.zeros_like(X)
-
-            # Вычисление полей и потенциала
-            for charge in charges:
-                x0, y0, q = charge
-                dx = X - x0
-                dy = Y - y0
-                r_squared = dx**2 + dy**2
-                r_squared[r_squared == 0] = 1e-20
-                r = np.sqrt(r_squared)
-                Ex += q * dx / (r_squared * r)
-                Ey += q * dy / (r_squared * r)
-                V += q / r
-
-            # Визуализация линий напряженности
-            ax.streamplot(X, Y, Ex, Ey, color='k', density=1.5, linewidth=0.5, arrowsize=1)
-
-            # Визуализация эквипотенциалов
-            if show_potential:
-                V_min, V_max = np.min(V), np.max(V)
-                if V_min == V_max:
-                    V_min -= 1
-                    V_max += 1
-                levels = np.linspace(V_min, V_max, potential_levels)
-                potential_contours = ax.contour(X, Y, V, levels=levels, cmap='viridis', alpha=0.7)
-                ax.clabel(potential_contours, inline=True, fontsize=8, fmt="%.2f")
-
-            # Отображение зарядов
-            for charge in charges:
-                x0, y0, q = charge
-                color = 'ro' if q > 0 else 'bo'
-                ax.plot(x0, y0, color, markersize=8)
-
-            ax.set_xlim(grid_min, grid_max)
-            ax.set_ylim(grid_min, grid_max)
-            ax.set_aspect('equal')
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_title('Электростатическое поле и эквипотенциалы')
-            ax.grid(True)
-
-            self.canvas.draw()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
-
-    def on_scroll(self, event):
-        """Обработчик для масштабирования графика с учетом границ сетки."""
-        ax = self.ax
-        x_min, x_max = ax.get_xlim()
-        y_min, y_max = ax.get_ylim()
-
-        # Задаем границы сетки
-        grid_min = float(self.grid_min_input.text())
-        grid_max = float(self.grid_max_input.text())
-
-        # Текущий центр и размеры
-        x_range = (x_max - x_min) / 2
-        y_range = (y_max - y_min) / 2
-        x_center = (x_max + x_min) / 2
-        y_center = (y_max + y_min) / 2
-
-        # Определяем коэффициент масштабирования
-        scale_factor = 1.2 if event.button == 'up' else 0.8
-
-        # Новые размеры с учетом масштабирования
-        new_x_range = x_range * scale_factor
-        new_y_range = y_range * scale_factor
-
-        # Ограничиваем новые границы сеткой
-        new_x_min = max(grid_min, x_center - new_x_range)
-        new_x_max = min(grid_max, x_center + new_x_range)
-        new_y_min = max(grid_min, y_center - new_y_range)
-        new_y_max = min(grid_max, y_center + new_y_range)
-
-        # Если новые границы слишком малы, предотвращаем масштабирование
-        if (new_x_max - new_x_min) < 1e-2 or (new_y_max - new_y_min) < 1e-2:
-            return
-
-        # Устанавливаем новые границы
-        ax.set_xlim([new_x_min, new_x_max])
-        ax.set_ylim([new_y_min, new_y_max])
-
-        # Обновляем график
-        self.canvas.draw()
-
+            epsilon1 = float(self.eps1_input.text())
+            epsilon2 = float(self.eps2_input.text())
+            E0 = float(self.E0_input.text())
+            theta_deg = float(self.theta_input.text())
+            limit_x = float(self.limit_x_input.text())
+            limit_y = float(self.limit_y_input.text())
+            if epsilon1 <= 0 or epsilon2 <= 0 or E0 <= 0 or limit_x <= 0 or limit_y <= 0:
+                raise ValueError
+            if not (0 <= theta_deg <= 90):
+                raise ValueError
+            self.plot.update_parameters(epsilon1, epsilon2, E0, theta_deg, limit_x, limit_y)
+        except ValueError:
+            QMessageBox.warning(self, 'Ошибка ввода', 'Введите корректные положительные числа.')
 
 def main():
     app = QApplication(sys.argv)
-    ex = ElectrostaticFieldApp()
+    w = MainWindow()
+    w.show()
     sys.exit(app.exec())
-
 
 if __name__ == '__main__':
     main()
